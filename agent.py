@@ -15,7 +15,13 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 from tools.traceability_check import traceability_check as run_check
 
 
-# 1. 實際執行 Excel 追溯性檢查的 Tool
+# Extend LangGraph's message state to record the post-tool routing decision.
+# This value is for execution tracing, not a message sent to the LLM.
+class ReviewState(MessagesState):
+    tool_decision: dict[str, str]
+
+
+# 1. Python tool: perform a real Excel traceability check.
 @tool("traceability_check")
 def check_excel(file_path: str) -> str:
     """Check SG, FSR, and TSR traceability in an Excel file.
@@ -23,7 +29,6 @@ def check_excel(file_path: str) -> str:
     Args:
         file_path: Excel filename inside the test_data directory.
     """
-    # 只允許讀取 /app/test_data 裡的 .xlsx 檔案，避免任意檔案存取。
     if (
         not file_path
         or file_path in (".", "..")
@@ -44,14 +49,13 @@ def check_excel(file_path: str) -> str:
     return json.dumps(result, ensure_ascii=False)
 
 
-# 2. 連接 Podman 網路中的 Ollama
+# 2. LLM: call Ollama through the Podman network.
 model = ChatOllama(
     model="qwen3:4b-instruct",
     base_url=os.getenv("OLLAMA_BASE_URL", "http://ollama:11434"),
     temperature=0,
 )
-tools = [check_excel]
-model_with_tools = model.bind_tools(tools)
+model_with_tools = model.bind_tools([check_excel])
 
 SYSTEM_PROMPT = """
 You are an ISO 26262 functional safety document review agent.
@@ -64,43 +68,44 @@ Definitions:
 When the user requests an Excel traceability review:
 1. Call the traceability_check tool with the specified filename.
 2. Read the real tool observation before reporting any findings.
-3. Answer in Traditional Chinese, citing requirement IDs and Excel row numbers
-   only if the observation provides them.
-4. Treat missing traceability as a potential documentation gap, not proof of
-   non-compliance with ISO 26262.
-5. Do not invent ISO clauses, affected rows, requirement IDs, or test results.
-6. Do not recommend deleting safety requirements based only on missing links.
+3. Answer in Traditional Chinese. Cite requirement IDs and Excel row numbers only
+   if they are present in the tool observation.
+4. Treat missing traceability as a potential documentation gap, not as proof of
+   ISO 26262 non-compliance.
+5. Never invent ISO clauses, rows, IDs, missing columns, or test results.
+6. Never recommend deleting a safety requirement based only on missing links.
 7. Distinguish input-format errors from actual traceability findings.
-8. This tool checks structural relationships only; it does not confirm semantic
-   consistency or formal ISO 26262 compliance.
+8. The tool performs structural checks only. Neither compliance nor
+   non-compliance with ISO 26262 has been established by this check.
+9. Never say that an item 'does not violate ISO 26262' without verifying the
+   applicable standards. State that compliance has not been assessed instead.
 
-Project Excel schema (not mandated column names by ISO 26262):
+Project-defined Excel schema (not mandated column names by ISO 26262):
 - SG sheet: ID, Description
 - FSR sheet: ID, SG_ID, Description
 - TSR sheet: ID, FSR_ID, Description
 
-If the tool reports an error, do not invent results. The graph will handle the
-error deterministically.
+If the tool reports an error, do not invent results. The graph handles errors
+through a deterministic error node.
 """
 
 
-# 3. Agent 節點：讓 LLM 決定是否呼叫 Tool
-def agent_node(state: MessagesState):
+# 3. Agent node: ask the model to decide whether to call a tool.
+def agent_node(state: ReviewState):
     response = model_with_tools.invoke(
         [SystemMessage(content=SYSTEM_PROMPT)] + state["messages"]
     )
     return {"messages": [response]}
 
 
-# 4. Tool 節點：實際執行 Python 函式，並回傳 Observation
-def tool_node(state: MessagesState):
+# 4. Tool node: actually execute the Python tool(s).
+def tool_node(state: ReviewState):
     observations = []
 
     for call in state["messages"][-1].tool_calls:
         try:
             if call["name"] != "traceability_check":
                 raise ValueError(f"Unknown tool: {call['name']}")
-
             result = check_excel.invoke(call["args"])
         except Exception as exc:
             result = json.dumps(
@@ -115,17 +120,17 @@ def tool_node(state: MessagesState):
     return {"messages": observations}
 
 
-# 5. 判斷 LLM 是否要求呼叫 Tool
-def route_after_agent(state: MessagesState):
-    last_message = state["messages"][-1]
-    if getattr(last_message, "tool_calls", None):
+# 5. Decision after an LLM response: call tools or finish.
+def route_after_agent(state: ReviewState):
+    if getattr(state["messages"][-1], "tool_calls", None):
         return "tools"
     return END
 
 
-# 6. 取得最近一次工具呼叫的所有 Observation
-def latest_tool_observations(state: MessagesState):
+# 6. Collect observations from the most recent tool batch.
+def latest_tool_observations(state: ReviewState):
     observations = []
+
     for message in reversed(state["messages"]):
         if isinstance(message, ToolMessage):
             try:
@@ -137,19 +142,41 @@ def latest_tool_observations(state: MessagesState):
             observations.append(data)
         elif isinstance(message, AIMessage):
             break
+
     return list(reversed(observations))
 
 
-# 7. 根據 Observation 分流：成功交給 LLM，失敗直接輸出錯誤
-def route_after_tools(state: MessagesState):
+# 7. New decision node: make the post-observation decision visible in Trace.
+# Returning a separate state field avoids inserting an artificial message
+# between the assistant's tool calls and the corresponding ToolMessages.
+def decision_node(state: ReviewState):
     observations = latest_tool_observations(state)
-    if observations and all(item.get("status") == "success" for item in observations):
-        return "agent"
-    return "error"
+    all_success = bool(observations) and all(
+        item.get("status") == "success" for item in observations
+    )
+
+    if all_success:
+        decision = {
+            "status": "success",
+            "next_node": "agent",
+            "reason": "Tool check succeeded; return results to the LLM for analysis.",
+        }
+    else:
+        decision = {
+            "status": "error",
+            "next_node": "error",
+            "reason": "Tool check failed or response was invalid; use fixed error handling.",
+        }
+
+    return {"tool_decision": decision}
 
 
-# 8. 錯誤節點：由程式組裝訊息，避免 LLM 編造欄位或行號
-def error_node(state: MessagesState):
+def route_after_decision(state: ReviewState):
+    return state["tool_decision"]["next_node"]
+
+
+# 8. Error node: build a deterministic answer from observed errors.
+def error_node(state: ReviewState):
     observations = latest_tool_observations(state)
     errors = [
         str(item.get("message", "Unknown tool error"))
@@ -169,10 +196,11 @@ def error_node(state: MessagesState):
     return {"messages": [AIMessage(content=final_message)]}
 
 
-# 9. 建立 LangGraph
-builder = StateGraph(MessagesState)
+# 9. Graph: agent -> tools -> decision -> agent/error.
+builder = StateGraph(ReviewState)
 builder.add_node("agent", agent_node)
 builder.add_node("tools", tool_node)
+builder.add_node("decision", decision_node)
 builder.add_node("error", error_node)
 
 builder.add_edge(START, "agent")
@@ -181,9 +209,10 @@ builder.add_conditional_edges(
     route_after_agent,
     {"tools": "tools", END: END},
 )
+builder.add_edge("tools", "decision")
 builder.add_conditional_edges(
-    "tools",
-    route_after_tools,
+    "decision",
+    route_after_decision,
     {"agent": "agent", "error": "error"},
 )
 builder.add_edge("error", END)
@@ -191,18 +220,17 @@ builder.add_edge("error", END)
 graph = builder.compile()
 
 
-# 10. 由環境變數指定測試檔案，並顯示 Agent Trace
+# 10. Command-line entry point: emit a fully inspectable Agent Trace.
 if __name__ == "__main__":
     file_name = os.getenv("REVIEW_FILE", "safety_requirements.xlsx")
-
     question = (
         f"請使用工具檢查 {file_name} 的 SG、FSR、TSR 追溯關係，"
         "列出問題與 Excel 列號。如果檔案不存在，請明確回報錯誤，"
         "不要自行推測審查結果。"
     )
 
-    print("=== User Input ===")
-    print(question)
+    print("=== User Input ===", flush=True)
+    print(question, flush=True)
 
     events = graph.stream(
         {"messages": [HumanMessage(content=question)]},
@@ -212,15 +240,25 @@ if __name__ == "__main__":
 
     for event in events:
         for node, update in event.items():
+            if node == "decision":
+                decision = update["tool_decision"]
+                print("\n=== Agent Decision (after Observation) ===")
+                print("Observation Status:", decision["status"])
+                print("Next Node:", decision["next_node"])
+                print("Reason:", decision["reason"], flush=True)
+                continue
+
             for message in update.get("messages", []):
                 if node == "tools":
                     print("\n=== Observation ===")
-                    print(message.content)
+                    print(message.content, flush=True)
                 elif getattr(message, "tool_calls", None):
-                    print("\n=== Agent Action ===")
+                    print("\n=== Agent Decision (before Tool Call) ===")
+                    print("Decision: call the tool(s) listed below")
+                    print("\n=== Tool Call ===")
                     for call in message.tool_calls:
                         print("Tool:", call["name"])
-                        print("Arguments:", call["args"])
+                        print("Arguments:", call["args"], flush=True)
                 elif node in ("agent", "error"):
                     print("\n=== Final Answer ===")
-                    print(message.content)
+                    print(message.content, flush=True)
