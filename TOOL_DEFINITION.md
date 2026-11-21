@@ -1,10 +1,8 @@
 # Tool Definition — ISO 26262 Functional Safety Document Review AI Agent
 
-**指定作業二：可執行 Agent + Tool Calling / State-based Decision（MVP）**
-
-**核心工具：** `traceability_check`
-
-**適用版本：** `assignment2-hardening` 分支之強化版；正式繳交前請再次對照 GitHub Commit 與實際測試結果。
+**指定作業二：可執行 Agent + Tool Calling / State-based Decision（MVP）**  
+**核心工具：** `traceability_check`  
+**文件用途：** 作業二正式繳交之 Tool Definition，與 `agent.py`、`tools/traceability_check.py`、`test_tool.py` 及 `README.md` 相互對應。
 
 > **範圍聲明：** 本工具以專案自訂的模擬 Excel 資料，執行 SG、FSR、TSR **結構化欄位及 ID 追溯關係檢查**。目前**未將 ISO 26262 正式標準文件作為審查依據**，亦未導入標準條款 RAG、需求語義分析或符合性判定。`status=success` 僅表示工具執行成功，不表示資料無缺失或符合 ISO 26262。
 
@@ -23,10 +21,8 @@ LLM **負責選擇是否提出工具呼叫**，並不直接讀取 Excel；真正
 
 ## 2. Input Definition
 
-**Tool 參數名稱：** `file_path`
-
-**資料型態：** `string`
-
+**Tool 參數名稱：** `file_path`  
+**資料型態：** `string`  
 **Agent 呼叫範例：** `{"file_path": "safety_requirements.xlsx"}`
 
 ### 2.1 檔案與路徑限制
@@ -165,7 +161,7 @@ decision_node：檢查 status 與 Observation 結構
 Final Answer / Exit Code
 ```
 
-**重要版本差異：** 舊版文件曾記載「工具成功後由 LLM 再分析結果」。**強化版已改為 `decision_node → finalize_node`**，由確定性程式根據有效 Observation 組成最後結果；LLM 仍負責起始 Tool Calling 決策。TC-01 提供完整的 `User Input → Agent Decision → Tool Call → Observation → Agent Decision → Final Answer` 實測紀錄。
+**Final Answer 產生方式：** LLM 負責起始的 Tool Calling 決策，Python Tool 負責 Excel 檢查；`decision_node` 驗證 Observation 後，由 `finalize_node` 依有效工具結果組成最終回答，不由 LLM 自行推測問題內容。TC-01 提供完整的 `User Input → Agent Decision → Tool Call → Observation → Agent Decision → Final Answer` 實測紀錄。
 
 ## 7. Testing & Evidence
 
@@ -198,7 +194,7 @@ Write-Host "Exit Code: $LASTEXITCODE"
 
 ### 7.3 尚待驗證項目
 
-- 強化版程式碼完成 GitHub 提交後，從**新 Commit 全新 Clone → Build → Run → Test**。
+- 從 GitHub `main` **全新 Clone → Podman Build → Run → Test**，確認公開 Repository 可獨立重現；目前尚無本次提交版本的完整重現測試紀錄。
 - 在其他作業系統／獨立 Podman 平台進行重現驗證；目前只確認 Windows + WSL2 + Podman。
 - 「LLM 連續未呼叫 Tool」、「不合法 Observation」等 Agent 邊界分支，尚未提供獨立端到端實測證據。
 
@@ -207,6 +203,6 @@ Write-Host "Exit Code: $LASTEXITCODE"
 - 只支援**專案自訂 `.xlsx` 格式**與 SG／FSR／TSR 的結構化欄位、單一上層 ID 追溯。
 - 目前未使用 ISO 26262 正式標準條文作為檢索或審查依據，**尚無 RAG**；也不會聲稱通過 ISO 26262 合規或認證。
 - 尚未解析 HARA／FSC／TSC PDF、檢查需求語義一致性、ASIL 分配合理性、設計／驗證證據或產生正式 Gap Analysis Report。
-- 本階段優先達成老師作業二要求的可執行 Agent、真實 Tool、Error Handling、完整 Trace 與容器測試；上述進階能力依第一次作業規劃於後續作業擴充。
+- 本次作業聚焦可執行 Agent、真實 Tool、Error Handling、完整 Trace 與容器測試；上述進階能力列為後續開發方向。
 
 參考：專案 [`README.md`](README.md)、[`agent.py`](agent.py)、[`tools/traceability_check.py`](tools/traceability_check.py)、[`test_tool.py`](test_tool.py) 與 `logs/`。正式繳交前，應確保文件中的「已測試」描述與提交的程式碼及測試證據屬於同一版本。
