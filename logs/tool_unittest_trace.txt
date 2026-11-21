@@ -1,0 +1,22 @@
+test_01_valid_workbook_has_no_issues (__main__.TraceabilityCheckTests.test_01_valid_workbook_has_no_issues) ... ok
+test_02_fsr_without_tsr_retains_excel_row (__main__.TraceabilityCheckTests.test_02_fsr_without_tsr_retains_excel_row) ... ok
+test_03_sg_without_fsr (__main__.TraceabilityCheckTests.test_03_sg_without_fsr) ... ok
+test_04_invalid_sg_reference (__main__.TraceabilityCheckTests.test_04_invalid_sg_reference) ... ok
+test_05_invalid_fsr_reference (__main__.TraceabilityCheckTests.test_05_invalid_fsr_reference) ... ok
+test_06_duplicate_fsr_is_ambiguous_without_false_missing_sg_link (__main__.TraceabilityCheckTests.test_06_duplicate_fsr_is_ambiguous_without_false_missing_sg_link) ... ok
+test_07_duplicate_sg_is_ambiguous (__main__.TraceabilityCheckTests.test_07_duplicate_sg_is_ambiguous) ... ok
+test_08_missing_id_and_description (__main__.TraceabilityCheckTests.test_08_missing_id_and_description) ... ok
+test_09_blank_row_is_ignored (__main__.TraceabilityCheckTests.test_09_blank_row_is_ignored) ... ok
+test_10_no_requirement_data_is_error (__main__.TraceabilityCheckTests.test_10_no_requirement_data_is_error) ... ok
+test_11_missing_sheet_is_error (__main__.TraceabilityCheckTests.test_11_missing_sheet_is_error) ... ok
+test_12_missing_required_column_is_error (__main__.TraceabilityCheckTests.test_12_missing_required_column_is_error) ... ok
+test_13_duplicate_required_header_is_error (__main__.TraceabilityCheckTests.test_13_duplicate_required_header_is_error) ... ok
+test_14_nonexistent_file_is_error (__main__.TraceabilityCheckTests.test_14_nonexistent_file_is_error) ... ok
+test_15_path_traversal_is_rejected (__main__.TraceabilityCheckTests.test_15_path_traversal_is_rejected) ... ok
+test_16_wrong_extension_is_rejected (__main__.TraceabilityCheckTests.test_16_wrong_extension_is_rejected) ... ok
+test_17_invalid_xlsx_is_error (__main__.TraceabilityCheckTests.test_17_invalid_xlsx_is_error) ... ok
+
+----------------------------------------------------------------------
+Ran 17 tests in 0.149s
+
+OK

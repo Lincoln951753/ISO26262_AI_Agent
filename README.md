@@ -1,201 +1,207 @@
 # ISO 26262 功能安全文件審查 AI Agent
 
-**指定作業二：可執行 Agent + Tool Calling / State-based Decision（MVP）**  
-**專案完整題目：** 基於 LLM 決策、RAG 與工具調用之 ISO 26262 功能安全文件審查 AI Agent  
-**技術組合：** Python 3.12 · LangGraph · LangChain · Qwen3 4B Instruct · Ollama · Podman · openpyxl  
-**程式碼：** [GitHub Repository](https://github.com/Lincoln951753/ISO26262_AI_Agent)  
-**本階段繳交期限：** 2026-11-22
+**指定作業二｜可執行 Agent + Tool Calling / State-based Decision（MVP）**
+**第一次作業規劃題目：** 基於 LLM 決策、RAG 與工具調用之 ISO 26262 功能安全文件審查 AI Agent
+**主要技術：** Python 3.12、LangGraph、LangChain、Qwen3 4B Instruct、Ollama、Podman、openpyxl
 
-> **本 README 是第二次作業的主要實作說明與驗收入口。** 老師可直接閱讀本文件，確認作業要求、技術選擇、原始碼位置、Tool 規格、完整 Agent Trace、Failure Cases，以及從 GitHub 使用 Podman 重現執行的方法。成果報告用於協助閱讀，並非必要資訊的唯一存放位置。
+**Repository：** https://github.com/Lincoln951753/ISO26262_AI_Agent
+
+**指定作業二繳交日期：** 2026-11-22
+
+> **閱讀與驗收說明**：這份 README 是指定作業二的主要驗收入口，包含需求對照、架構、Tool Definition、Podman 建置／執行、完整 Trace、Failure Cases、AI 輔助開發與驗收限制。`TOOL_DEFINITION.md` 為工具的補充文件。
 >
-> **範圍聲明：** 現階段僅以模擬 Excel 檢查 SG → FSR → TSR 的**結構化追溯關係**；尚未實作 ISO 26262 正式條款 RAG、PDF 語義審查或符合性判定。發現缺漏不等於已證明違反 ISO 26262。
+> **能力邊界**：本階段僅對**模擬 Excel** 的 SG（Safety Goal）→ FSR（Functional Safety Requirement）→ TSR（Technical Safety Requirement）之**結構化 ID 追溯關係**進行規則檢查。尚未實作 ISO 26262 條款 RAG、PDF 解析、需求語義判讀、正式合規評定或產品功能安全認證。工具發現追溯缺漏，不代表已經判定違反 ISO 26262。
+>
+> **版本與證據須知**：本 README 說明正在 `assignment2-hardening` 分支測試的強化版。使用者已在 Windows 11 + WSL2 + Podman 對強化版完成 TC-01、FC-01、FC-02、FC-03，並在 Podman 中執行 17 組 Tool 單元測試；對應結果分別保存於 `logs/`。原公開 `main` 的 `a7701e2` 版本另有「從 GitHub 重新 Clone → 無快取 Build → 執行」的驗證紀錄。**強化版尚未合併 / Push 到 `main`，也尚未從新 Commit 乾淨 Clone 或在不同作業系統驗證。** 正式繳交前須完成第 8 節的最終驗收。
 
 ---
 
-## 1. 老師作業要求與繳交內容對照
+## 1. 老師作業規範與繳交要求對照
 
-本節為助教快速驗收入口。第二次作業重點是將第一次的設計轉為**真正可執行的 Agent**，而非只交設計圖或由 LLM 單純問答。本專案採用老師允許的 **Tool Calling + State-based Decision**，不宣稱已完成完整 ReAct / 自主多步規劃。
+### 1.1 作業二必要項目（第 6.1、6.2、6.6 節）
 
-### 1.1 第二次作業必要項目（6.1、6.2、6.6）
+| 要求 | 對應實作與證據 |
+| --- | --- |
+| 由作業一設計轉為可執行 Agent | [`agent.py`](agent.py)：LangGraph StateGraph、LLM Tool Calling 與條件式流程 |
+| User Input → Agent → LLM / Agent Logic → Output | 第 3 節 Agent 工作流；第 5 節操作指令；第 6 節強化版端到端 Trace |
+| 至少一個可實際執行的 Tool | `traceability_check`：讀取 Excel，回傳真實 JSON Observation |
+| Tool Definition：名稱、目的、輸入、輸出、Error Handling | 第 4 節與 [`TOOL_DEFINITION.md`](TOOL_DEFINITION.md) |
+| 一組完整 Agent Trace | 第 6.1 節：User Input → Decision → Tool Call → Observation → Decision → Final Answer |
+| 至少兩組 Failure Cases | FC-01 檔案不存在、FC-02 缺必要欄位、FC-03 模型連線失敗；第 6、7 節 |
+| 原始碼、README、部署方式、測試資料／結果 | [`agent.py`](agent.py)、[`Containerfile`](Containerfile)、[`requirements.txt`](requirements.txt)、[`test_data/`](test_data/)、[`logs/`](logs/) |
+| Podman Engine 容器化 | 第 5 節；第 8 節記錄目前已驗證與尚待驗證項目 |
 
-| 老師要求 | 本專案如何對應 | 直接查看 |
-| --- | --- | --- |
-| 6.1：第一次作業規劃轉為可執行 Agent | 以 LangGraph StateGraph 建立 Agent、Tool、Decision、Error 節點 | [agent.py](agent.py)、[第 3 節](#3-系統架構與-agent-決策流程) |
-| 6.1：Tool / Workflow / State-based Decision | LLM 選擇 `traceability_check`；執行後依 Observation `status` 決定下一個節點 | [第 3 節](#3-系統架構與-agent-決策流程)、[第 6 節](#6-完整-agent-執行追蹤trace) |
-| 6.2：User Input → Agent → LLM/Agent Logic → Output | 已實際執行三組端到端測試 | [第 6 節](#6-完整-agent-執行追蹤trace) |
-| 6.2：至少一個真正可執行 Tool | `traceability_check` 以 `openpyxl` 讀取 Excel，實際檢查需求 ID | [tools/traceability_check.py](tools/traceability_check.py)、[第 4 節](#4-tool-definition完整規格) |
-| 6.6（1）：Agent 原始碼 | LangGraph Agent 主程式、Python Tool、Containerfile、依賴表 | [agent.py](agent.py)、[tools](tools/)、[Containerfile](Containerfile)、[requirements.txt](requirements.txt) |
-| 6.6（2）：Tool 定義（名稱／用途／輸入／輸出／錯誤處理） | 本 README 詳列 JSON 範例、驗證規則及各類錯誤 | [第 4 節](#4-tool-definition完整規格)、[TOOL_DEFINITION.md](TOOL_DEFINITION.md) |
-| 6.6（3）：完整執行追蹤 | User Input → 第一次 Decision → Tool Call → Observation → 第二次 Decision → Final Answer | [第 6 節](#6-完整-agent-執行追蹤trace)、[logs](logs/) |
-| 6.6（4）：至少兩個 Failure Cases | FC-01 缺少檔案；FC-02 必要欄位缺失，均包含原因、回應及改善方法 | [第 7 節](#7-測試結果與兩個-failure-cases) |
-| Podman 容器執行與部署說明 | Ollama、Python Agent 均在 Podman 容器內運行；附 Clone、Build、Run、Test 指令 | [第 5 節](#5-使用-podman-從-github-建置與執行) |
-| AI 輔助開發紀錄及技術理解 | 說明 AI 協助範圍、實際操作、除錯、設計理由 | [第 9 節](#9-開發過程技術理解ai-輔助與實作驗證) |
+本專案採 **Tool Calling + State-based Decision**，不以完整 ReAct、自主長期 Planning 或 RAG 作為已完成能力。老師允許依專案需求選擇合適 Agent 機制，而非強制使用所有技術。
 
-### 1.2 對照第二次作業評分項目（合計 20%）
+### 1.2 作業二配分（占學期總成績 20%）
 
-| 評分項目 | 配分 | 本專案對應證據 |
+| 評分項目 | 配分 | 驗收證據 |
 | --- | ---: | --- |
-| Working Agent | 6% | `agent.py`、第 5 節執行指令、第 6 節端到端 Trace |
-| Tool / Workflow / ReAct / Planning | 5% | LangGraph + 真實 Python Tool + 條件式決策 |
-| 功能完整性 | 3% | SG / FSR / TSR Excel ID 追溯性 MVP；第 4、7 節 |
-| Error Handling | 2% | `error_node`；FC-01 / FC-02 |
-| Testing / Failure Evidence | 2% | 第 6 節三份完整 Trace、第 7 節預期與實際結果 |
-| README / Environment | 2% | 第 5 節部署方法、第 8 節環境與重現限制 |
+| Working Agent 可執行性 | 6% | 第 5 節容器命令、強化版 TC-01 與三個 Failure Cases 的實測輸出 |
+| Tool / Workflow / ReAct / Planning | 5% | LLM 提出 Tool Call、Python Tool 真正執行、LangGraph Decision |
+| Agent 功能完整性 | 3% | SG/FSR/TSR 結構化追溯檢查 MVP |
+| Error Handling | 2% | Tool Error、LLM 服務錯誤及 Exit Code 已實測；無 Tool Call 的分支尚未端到端實測 |
+| Testing / Failure Evidence | 2% | TC-01、FC-01～03 日誌、17 組 unittest 結果與第 8 節驗收清單 |
+| README / 執行環境 | 2% | 第 4～5、8～10 節與專案檔案索引 |
 
-**以上為證據位置對照，不代表老師已經核定得分。**
+本表表示**提供證據的位置**，不是教授或助教已核定的分數。
 
 ---
 
-## 2. 專案目標、背景與本階段範圍
+## 2. 專案目的、使用情境與階段範圍
 
-### 2.1 專案要解決的問題
+### 2.1 背景與使用者
 
-車輛功能安全開發中的 HARA、FSC、TSC 等文件，常需要人工確認安全目標（SG）、功能安全需求（FSR）、技術安全需求（TSR）之間的追溯關係。當文件版本增加時，可能出現未建立關聯、引用錯誤或證據不完整等問題。
+ISO 26262 功能安全開發涉及 HARA、FSC、TSC 等文件，以及 Safety Goal（SG）、Functional Safety Requirement（FSR）、Technical Safety Requirement（TSR）等不同層級的安全需求。當文件增多時，人工確認需求 ID 的參照、缺漏與追溯關係容易耗時。本專案以**功能安全工程師、車用系統研發與文件審查人員**為目標使用者，開發可供人工複核的輔助工具。
 
-第一次作業規劃的最終目標是讓 Agent 結合文件解析、RAG、Tool Calling 與受控決策流程，輔助功能安全工程師執行初步審查、查找依據及產生 Gap Analysis Report，最後仍由工程師確認。
+第一次作業的完整構想包括文件解析、標準知識檢索（RAG）、Tool Calling、流程規劃、差距分析報告等。第二次作業為**可執行的最小雛形**，先聚焦證明下列閉環可運作：
 
-### 2.2 第二次作業的 MVP 目標
+1. `REVIEW_FILE` 指定一份專案內模擬 Excel。
+2. Qwen3 理解審查請求並提出 `traceability_check` Tool Call。
+3. Python `openpyxl` 工具真正讀取 Excel，檢查 SG/FSR/TSR ID 參照。
+4. Tool 將結果包裝成 `ToolMessage`（Observation）。
+5. LangGraph 檢查 Observation 狀態與資料結構，決定成功輸出或錯誤處理。
+6. Console 顯示完整 Trace，並以 Podman 封裝應用程式。
 
-本階段聚焦**驗證 Agent 真的能執行工作**，縮小為以下閉環：
+### 2.2 與第一次作業功能需求（FR）的對照
 
-1. 接收由 `REVIEW_FILE` 指定的使用者審查需求。
-2. 本地 Qwen3 模型判斷並呼叫 `traceability_check`。
-3. Python 工具讀取模擬 Excel 並驗證 SG → FSR → TSR 的 ID 關係。
-4. LangGraph 根據工具結果進行 **State-based Decision**。
-5. 成功時交給 LLM 整理結果；失敗時由 `error_node` 產生可驗證的固定錯誤回報。
-6. 以 Podman 執行整套 Agent，保留完整的 Trace 供檢查。
-
-### 2.3 已完成與尚未完成
-
-| 功能 | 狀態 | 說明 |
+| 需求 | 第一階段原規劃 | 作業二 MVP 達成程度 |
 | --- | --- | --- |
-| 本地 LLM（Qwen3 + Ollama） | 已測試 | 透過容器間 HTTP API 呼叫 |
-| 真正的 Python Tool Calling | 已測試 | 模型輸出工具名稱與參數、Tool Node 實際執行 |
-| SG／FSR／TSR 追溯性檢查 | 已測試 | Excel 欄位、ID 與引用關係 |
-| Observation + State-based Decision | 已測試 | `success → agent`、`error → error` |
-| Failure Cases | 已測試 | 檔案不存在、欄位缺失 |
-| Podman 上的 Agent 與 Ollama | 已測試 | Windows 11 + WSL2 |
-| ISO 26262 條款 RAG | 未實作 | 後續作業 |
-| PDF 文件解析、語義／ASIL 審查 | 未實作 | 後續作業 |
-| 真實 HARA／FSC／TSC 審查 | 未驗證 | 目前只使用模擬 Excel |
-| 另一平台上的完整部署重現 | 尚未驗證 | 詳見第 8 節 |
+| FR-01 | 上傳 Excel/PDF 文件 | **尚未完成上傳介面**；現以 `REVIEW_FILE` 指定 `test_data/` 中 Excel |
+| FR-02 | 文件解析 | **部分**：固定 Schema 的 Excel 解析；無 PDF |
+| FR-03 | Agent 規劃與選擇工具 | **部分**：LLM 選用一種 Tool；尚無多工具自主規劃 |
+| FR-04 | RAG 檢索 ISO 條款 | **未實作**；後續階段 |
+| FR-05 | 追溯性、欄位、語義與證據檢查 | **部分**：欄位、ID 重複與空白、無效／歧義引用與缺漏；尚無語義／證據評估 |
+| FR-06 | Observation 後調整／錯誤控制 | **部分**：State-based success/error 路由與有限無工具重試；不是完整 Replanning |
+| FR-07 | 來源與條款支持的 Gap Report | **未實作**；目前只有文字／JSON 檢查結果 |
+| FR-08 | 保存審查與工具紀錄 | **部分**：Console Trace 可輸出為文字檔；尚無 SQLite 歷史管理 |
+
+**縮減範圍理由**：作業二評分重點是可執行的 Agent、真實 Tool、Agent Trace、Failure Cases 與可重現性。因此先完成可測試的結構化追溯閉環，再於後續作業依既定規劃加入 RAG、文件解析、進階審查及評估。
+
+### 2.3 技術選擇
+
+| 技術 | 本階段 | 原因 |
+| --- | --- | --- |
+| Qwen3 + Ollama | 使用 | 本地模型作為 LLM Tool Selection 來源 |
+| LangGraph | 使用 | 顯式 StateGraph、節點分工與條件分流，便於 Trace |
+| Python + openpyxl | 使用 | 結構化欄位／ID 關係可由確定性規則驗證 |
+| Podman | 使用 | 課程要求容器化執行與重現 |
+| ReAct（完整循環） | 不使用 | 本期只有單一規則檢查工具，不需要自主多步推理迴圈 |
+| RAG | 尚未使用 | 需另外建立合法標準知識來源、引用和正確性評估 |
+| Memory / SQLite | 尚未使用 | 本期只檢查單次 Excel；持續任務記憶留待後續 |
+| Multi-Agent / Self-Reflection | 不使用 | MVP 不需要額外增加複雜度 |
 
 ---
 
-## 3. 系統架構與 Agent 決策流程
+## 3. Agent 系統架構與原理
 
-### 3.1 容器與元件架構
+### 3.1 Podman 元件架構
 
 ```text
-Windows 11 / WSL2
-      |
-      v
-Podman Engine / Podman Network: iso26262-net
-      |
-      +-- Ollama Container (ollama)
-      |     - Model: qwen3:4b-instruct
-      |     - API: http://ollama:11434
-      |
-      +-- Python Agent Container (iso26262-agent:dev)
-            - Python 3.12
-            - LangGraph / LangChain
-            - agent.py
-            - tools/traceability_check.py
-            - test_data/*.xlsx
+Windows 11 + WSL2（已實測主機）
+  └─ Podman Engine / iso26262-net
+       ├─ Ollama Container
+       │    └─ qwen3:4b-instruct  /  http://ollama:11434
+       └─ Python Agent Container（Containerfile）
+            ├─ agent.py                LangGraph / LLM Tool Calling
+            ├─ tools/traceability_check.py
+            ├─ test_data/*.xlsx         模擬需求資料
+            └─ test_tool.py            17 組單元測試
 ```
 
-使用者輸入在目前版本由 `agent.py` 根據 `REVIEW_FILE` 環境變數形成，尚無 Web UI、檔案上傳或任意文字聊天介面。**LLM Server 與 Agent 都採用 Podman 容器**，符合本專案的部署選擇。
+`OLLAMA_BASE_URL=http://ollama:11434` 是**容器之間**透過 Podman 網路通訊的位址。`REVIEW_FILE` 則是本期 CLI 的使用者輸入參數來源，並非 Web UI 或檔案上傳功能。
 
-### 3.2 Agent Graph（本階段採 State-based Decision）
+### 3.2 重構版 Agent Workflow
 
 ```mermaid
 flowchart TD
-    START([START / User Input]) --> A[agent_node: Qwen3 LLM]
-    A --> B{route_after_agent: 有 Tool Call?}
-    B -->|有| C[tool_node: 執行 traceability_check]
-    B -->|無| END([END / Final Answer])
-    C --> O[Observation: ToolMessage / JSON]
-    O --> D[decision_node: 檢查 status]
-    D --> E{route_after_decision}
-    E -->|success| A
-    E -->|error 或無效結果| F[error_node: 固定錯誤回覆]
-    F --> END
+    S([START / User Input]) --> A[agent_node: Qwen3 產生 Tool Call]
+    A --> R{route_after_agent}
+    R -->|有 Tool Call| T[tool_node: 執行 Python Tool]
+    R -->|沒有 Tool Call 且可重試| X[retry_node: 最多再嘗試一次]
+    X --> A
+    R -->|沒有 Tool Call 已達上限| N[no_tool_node: 回報未檢查]
+    R -->|LLM 服務錯誤| E[error_node: 固定錯誤回覆]
+    T --> O[Observation: ToolMessage JSON]
+    O --> D[decision_node: 驗證 JSON 與 status]
+    D -->|合法 success| F[finalize_node: 根據 Observation 輸出]
+    D -->|error / 不合法結果| E
+    F --> Z([END])
+    N --> Z
+    E --> Z
 ```
 
-**流程設計重點：**
+**完整 Trace 對應老師要求的六階段：** `User Input → Agent Decision → Tool Call → Observation → Agent Decision → Final Answer`。
 
-- **第一次 Agent Decision（LLM）：** 模型根據請求選擇 `traceability_check`，提出 `file_path` 參數；LLM 並不直接執行 Python。
-- **Tool Call / Observation（Python）：** `tool_node` 實際呼叫工具，回傳包含 `status` 的 JSON。
-- **第二次 Agent Decision（程式化）：** `decision_node` 根據工具結果設定 `tool_decision`；`route_after_decision` 選擇下一節點。此步是**State-based Decision**，不是 LLM 自主 Replanning。
-- **成功路徑：** 回到 `agent_node`，由模型根據觀察結果整理自然語言回答。
-- **失敗路徑：** 前往 `error_node`，使用實際錯誤訊息產生固定回覆，避免 LLM 編造需求 ID、Excel 行號或符合性結論。
+### 3.3 為何要這樣設計？
 
-### 3.3 原始碼節點與責任
+1. **LLM 負責工具選擇，而不是取代資料來源。** Qwen3 透過 LangChain `bind_tools()` 產生工具名稱與 `file_path`，無法自行讀取 Excel；`tool_node()` 才實際呼叫 Python。
+2. **Observation 是驗證基礎。** `traceability_check` 返回 JSON；成功執行 `status=success` 與找到追溯問題 `issue_count>0` 是兩件事。
+3. **State-based Decision 採程式化規則。** `decision_node()` 檢查 status、summary、issues、row 等結構，才能進入 `finalize_node()`；發生錯誤則進 `error_node()`，避免讓模型補造行號或安全結論。
+4. **Fail-closed：沒有證據就不能宣稱已審查。** 第一次 LLM 無 Tool Call 時有限重試；兩次都無工具則由 `no_tool_node()` 回報未完成。Ollama 連線例外也會顯示明確失敗。
+5. **最終結果以可追溯資訊為主。** `finalize_node()` 將 Tool Observation 轉成固定格式文字，保留需求 ID、問題類型與 Excel 實際列號；這是刻意降低生成式文字的不確定性。
+6. **不是完整 ReAct。** 有有限重試與條件分支，但沒有多工具目標分解、反覆自主 Planning、RAG 或語義驗證，不應過度宣稱。
 
-| 元件 | 位置 | 工作 |
-| --- | --- | --- |
-| `ReviewState` | [`agent.py`](agent.py) | 保存 MessagesState 及 `tool_decision` 狀態 |
-| `agent_node()` | [`agent.py`](agent.py) | 請 Qwen3 決定工具呼叫或生成回答 |
-| `route_after_agent()` | [`agent.py`](agent.py) | 根據是否有 `tool_calls` 決定執行 Tool 或結束 |
-| `tool_node()` | [`agent.py`](agent.py) | 驗證 Tool 名稱，實際執行 Python Tool 並包裝為 ToolMessage |
-| `latest_tool_observations()` | [`agent.py`](agent.py) | 讀取最新一批 Tool 結果並解析 JSON |
-| `decision_node()` | [`agent.py`](agent.py) | 判斷 Observation 成功／失敗，保存下一個節點與理由 |
-| `route_after_decision()` | [`agent.py`](agent.py) | 依狀態導向 `agent` 或 `error` |
-| `error_node()` | [`agent.py`](agent.py) | 根據實際 Error Observation 產生固定錯誤報告 |
-| `traceability_check()` | [`tools/traceability_check.py`](tools/traceability_check.py) | 解析 Excel 與檢查 SG／FSR／TSR 追溯關係 |
+### 3.4 主要程式節點
 
-### 3.4 為何使用 LangGraph？
-
-使用 StateGraph 的原因是將 **LLM 工具選擇、程式實際執行、條件式決策、錯誤處理**分離為可檢查的節點，讓每一步都能被追蹤與測試。這個 MVP 不依賴模型自行判斷錯誤是否有效，避免在工具失敗時繼續生成無依據的結論。
+| 元件 | 功能 |
+| --- | --- |
+| `ReviewState` | 記錄 messages、指定檔案、LLM 次數、錯誤、Observation、決策 |
+| `agent_node()` | 對 Qwen3 提出任務；取得 Tool Call；捕捉 LLM 呼叫例外 |
+| `route_after_agent()` | 根據有無 Tool Call、是否已達重試上限、是否有服務錯誤決定方向 |
+| `retry_node()` | 第一次未呼叫工具時，要求模型再嘗試一次 |
+| `tool_node()` | 檢查 Tool 名稱、數量、參數與指定檔名後才執行 Python Tool |
+| `latest_tool_observations()` | 解析最新一批 ToolMessage 的 JSON |
+| `decision_node()` | 檢查 Observation 內容是否有效，產生第二次 Agent Decision |
+| `route_after_decision()` | 指向 `finalize` 或 `error` |
+| `finalize_node()` | 使用有效 Observation 生成固定結果，不再讓 LLM 猜測缺失 |
+| `no_tool_node()` | 未成功取得工具呼叫時回報檢查未執行 |
+| `error_node()` | 固定回報服務或工具錯誤，並禁止合規推論 |
 
 ---
 
-## 4. Tool Definition（完整規格）
+## 4. Tool Definition：`traceability_check`
 
-### 4.1 工具名稱、用途與實際執行方式
+### 4.1 名稱、目的、輸入、輸出
 
-| 欄位 | 說明 |
+| 欄位 | 定義 |
 | --- | --- |
-| **Tool Name** | `traceability_check` |
-| **Purpose** | 針對 Excel 中 SG → FSR → TSR 的**結構化 ID 追溯關係**執行規則檢查 |
-| **Tool Binding** | `@tool("traceability_check")` / `check_excel()` |
-| **Actual Implementation** | `tools/traceability_check.py`，透過 `openpyxl` 讀取工作表與列資料 |
-| **Input** | `file_path: str`，例如 `safety_requirements.xlsx` |
-| **Output** | JSON 字串；正常有 `status`、`summary`、`issues`，失敗有 `status`、`message` |
-| **Error Handling** | Tool 回傳 `status=error`，LangGraph 導向 `error_node`，不交由 LLM 編造結果 |
+| Tool Name | `traceability_check` |
+| Purpose | 以 Python 規則檢查 SG → FSR → TSR Excel ID 追溯關係 |
+| Agent Binding | `@tool("traceability_check")` 的 `check_excel(file_path: str)` |
+| Actual Function | [`tools/traceability_check.py`](tools/traceability_check.py) 的 `traceability_check(file_path)` |
+| Input | `file_path: str`，例如 `safety_requirements.xlsx` |
+| Output（成功） | JSON：`status=success`、`summary`、`issues` |
+| Output（錯誤） | JSON：`status=error`、`message` |
+| Error Handling | 檔案、工作表、必要欄位、工具參數、解析等錯誤，回報錯誤並由 LangGraph 決策分流 |
 
-模型呼叫工具的參數範例：
+**限定讀取位置**：只允許 `test_data/` 內的 `.xlsx` 檔名，拒絕帶路徑分隔符或非 `.xlsx` 的輸入。新版 Agent 另外核對 Tool Call 的 `file_path` 是否與 `REVIEW_FILE` 一致。這是輸入限制措施，不代表已完成全面的檔案安全性審計。
 
-```python
-{"file_path": "safety_requirements.xlsx"}
-```
+### 4.2 專案自訂 Excel 格式
 
-**存取限制：** 工具僅允許使用 `/app/test_data/` 下的 `.xlsx` **檔名**，不接受帶有 `/`、`\\` 路徑分隔符的輸入，且僅接受 `.xlsx` 檔名，以限制任意檔案讀取。`test_data/` 中的檔案會在 Build 階段複製至容器。
-
-### 4.2 Excel Input Schema
-
-| 工作表 | 必要欄位 | 欄位意義 |
+| Sheet | 必要欄位 | 意義 |
 | --- | --- | --- |
-| `SG` | `ID`, `Description` | 安全目標 ID 與描述 |
-| `FSR` | `ID`, `SG_ID`, `Description` | 功能安全需求 ID、所參照的 SG ID 與描述 |
-| `TSR` | `ID`, `FSR_ID`, `Description` | 技術安全需求 ID、所參照的 FSR ID 與描述 |
+| `SG` | `ID`, `Description` | 安全目標及描述 |
+| `FSR` | `ID`, `SG_ID`, `Description` | 功能安全需求，單一 SG 引用欄位 |
+| `TSR` | `ID`, `FSR_ID`, `Description` | 技術安全需求，單一 FSR 引用欄位 |
 
-**欄位名稱為本專案測試格式，不是 ISO 26262 標準規定的固定欄名。**
+標題位於第 1 列，資料自第 2 列開始，輸出的 `row` 為實際 Excel 列號。**這些 Excel 欄名是本專案測試格式，不是 ISO 26262 所規定的固定欄名。**
 
-### 4.3 Processing Logic
+### 4.3 工具的處理方式
 
-1. 檢查指定 Excel 檔案是否存在。
-2. 使用 `openpyxl` 開啟檔案，確認 `SG`、`FSR`、`TSR` 工作表存在。
-3. 確認每張工作表具有必要欄位。
-4. 逐列讀取資料，保存實際 Excel 列號（標題為第 1 列，資料從第 2 列開始）。
-5. 確認每筆 FSR 的 `SG_ID` 是否引用有效 SG。
-6. 確認每筆 TSR 的 `FSR_ID` 是否引用有效 FSR。
-7. 列出沒有被 FSR 關聯的 SG、沒有被 TSR 關聯的 FSR。
-8. 輸出結構化 JSON，供 Agent 後續決策及摘要使用。
+1. 限制可讀取的路徑與副檔名，只允許專案 `test_data/` 內的 `.xlsx`。
+2. 確認 `SG`、`FSR`、`TSR` 工作表存在且必要欄名正確；缺表頭、缺欄位、重複必要欄位或完全沒有需求資料則返回 `status=error`。
+3. 逐列讀取 Excel，保留實際列號；完全空白列會略過。
+4. 檢查各層 `ID` 是否重複或空白、`Description` 是否空白。
+5. 檢查 FSR 引用 SG、TSR 引用 FSR 時，識別不存在或重複而產生歧義的上層 ID。
+6. 檢查唯一可識別的 SG 是否有 FSR、FSR 是否有 TSR；若子需求本身的 ID 重複或空白，仍以實際引用列判定是否「存在子需求引用」，避免將資料品質缺陷重複誤判為沒有追溯關係。
+7. 將 `status`、`summary`、`issues` 與實際 Excel 列號回傳給 Agent 作 Observation。
 
-**可回報的追溯性問題類型：** `INVALID_SG_REFERENCE`、`INVALID_FSR_REFERENCE`、`SG_WITHOUT_FSR`、`FSR_WITHOUT_TSR`。
+目前已實作的 Issue 類型包含：`INVALID_SG_REFERENCE`、`INVALID_FSR_REFERENCE`、`AMBIGUOUS_SG_REFERENCE`、`AMBIGUOUS_FSR_REFERENCE`、`SG_WITHOUT_FSR`、`FSR_WITHOUT_TSR`、`DUPLICATE_SG_ID`、`DUPLICATE_FSR_ID`、`DUPLICATE_TSR_ID`、`MISSING_ID`、`MISSING_DESCRIPTION`。
 
-### 4.4 Output — Success 範例（TC-01 實測結果）
+**限制**：此工具尚未檢查需求文字是否符合 ISO 26262、ASIL 分配、設計／測試證據，也不支援多對多需求引用；`status=success` 僅表示工具執行完成，即使 `issue_count > 0` 亦然。
+
+### 4.4 正常工具輸出（強化版 TC-01 實測 Observation）
 
 ```json
 {
@@ -217,144 +223,169 @@ flowchart TD
 }
 ```
 
-這裡 `status=success` **代表工具成功完成檢查**，不代表「沒有發現追溯問題」；本案例仍有一項 `issue`。
+這裡 `status=success` 只代表**工具完成檢查**，但 `issue_count=1` 代表找到一筆需求追溯缺漏。它不是 ISO 26262 合規判斷。
 
-### 4.5 Output — Error 範例（FC-02 實測結果）
+### 4.5 錯誤輸出及處置
 
-```json
-{
-  "status": "error",
-  "message": "FSR missing columns: ['SG_ID']"
-}
-```
-
-### 4.6 Tool Error Handling
-
-| 錯誤類型 | 產生原因 | 工具回覆／處理方法 |
+| 錯誤 | 原因 | 處置 |
 | --- | --- | --- |
-| Invalid File Path | 非 `.xlsx`、包含目錄路徑或無效檔名 | 拒絕讀取，回報允許的檔名格式 |
-| File Not Found | `/app/test_data/` 找不到指定檔案 | `File not found: ...` |
-| Missing Sheet | 缺少 `SG`、`FSR` 或 `TSR` | `Missing sheet: ...` |
-| Missing Column | 必要欄位未出現 | `[sheet] missing columns: [...]` |
-| Empty Sheet | 工作表完全沒有標題資料列 | `Empty sheet: ...` |
-| Excel Parsing Error | Excel 讀取／解析例外 | `Excel parsing failed: ...` |
-| Invalid Tool Response | Observation 無法轉成預期 JSON 物件 | Decision Node 視為錯誤並導向 Error Node |
-| Unknown Tool / Execution Exception | 模型提出未知工具或執行時拋出例外 | Tool Node 包裝為 `status=error` 結果 |
+| File Not Found | 指定 Excel 不存在 | 回報路徑，停止審查；確認檔名並重新執行 |
+| Missing Sheet | 缺 SG / FSR / TSR 工作表 | 回報缺少的工作表 |
+| Missing Column | 缺少必要欄名 | 回報工作表及欄位名稱 |
+| Empty Sheet | 沒有表頭資料 | 回報無效工作表 |
+| Excel Parsing Error | 工作簿內容無法解析 | 回報解析錯誤，不臆測資料 |
+| Invalid Tool Input | 檔名非允許格式、模型改寫檔名、Tool 不符合要求 | 拒絕 Tool Call，產生 `status=error` |
+| Invalid Tool Observation | JSON 無效或 summary 與 issues 不一致 | 導向 `error_node` |
+| No Tool Call | 模型未提出所需工具呼叫 | 最多額外嘗試一次，仍沒有就回報未完成 |
+| LLM Service Error | Ollama 服務失敗或模型無法回應 | `error_node` 產生固定錯誤回覆 |
 
-更多詳細定義另見 [TOOL_DEFINITION.md](TOOL_DEFINITION.md)。
+注意：TC-01、FC-01、FC-02、FC-03 與 Exit Code 已在強化版 Podman Image 上實測；「模型連續未呼叫 Tool」及「不合法 Observation」分支仍需要獨立的 Agent 層級測試，不應先宣稱已實測通過。`TOOL_DEFINITION.md` 是補充文件，正式 Push 前也應核對其 Issue 清單是否同步。
 
 ---
 
-## 5. 使用 Podman 從 GitHub 建置與執行
+## 5. Podman 建置與執行（PowerShell）
 
-> **重現目標：** 使用者取得此 Repository 後，能自行使用 Podman 建置 Agent、啟動 Ollama、執行三組測試並比對第 6、7 節的結果。以下指令以 **Windows 11 / PowerShell + WSL2 + Podman** 為實際測試環境；尚未宣稱其他作業系統已驗證。
+### 5.1 環境與相依性
 
-### 5.1 環境需求
-
-| 項目 | 本次已測試環境 |
+| 項目 | 目前已有的實測環境 |
 | --- | --- |
-| 主機 | Windows 11 x64 |
-| CLI / IDE | PowerShell、Visual Studio Code、Git |
-| 容器引擎 | Podman CLI 6.1.4 + Podman Machine（WSL2） |
-| Agent Image | `docker.io/library/python:3.12-slim` 為基底 |
-| Python packages | LangGraph、LangChain Core、LangChain Ollama、openpyxl 3.1.5 |
-| LLM Server | Ollama 容器（開發時 API 0.40.16） |
-| 模型 | `qwen3:4b-instruct` |
+| 主機 | Windows 11 x64、WSL2 |
+| IDE / Terminal | Visual Studio Code、PowerShell |
+| 容器引擎 | Podman CLI 6.1.4、Podman Machine（WSL） |
+| Agent Base Image | `python:3.12-slim` |
+| Python Packages | `requirements.txt`：LangGraph、LangChain Core、LangChain Ollama、openpyxl（測試時使用 3.1.5） |
+| LLM Server | Ollama Podman Container |
+| 模型 | `qwen3:4b-instruct`（既有模型 ID：`0edcdef34593`） |
 | Container Network | `iso26262-net` |
 
-需先安裝 **Git、WSL2、Podman CLI / Podman Desktop** 並建立 Podman Machine；首次拉取映像與模型需要網路，模型檔案需要足夠儲存空間。
+> 專案使用兩個容器，**Agent 與 Ollama 都由 Podman 啟動**。`requirements.txt` 的部分依賴採版本範圍，Ollama 使用 `latest`，因此完整鎖版與不同作業系統的重現性仍有待改善。部署時請記錄實際版本。
 
-### 5.2 驗證 Podman 並 Clone 專案
+### 5.2 Clone 專案
+
+```powershell
+git clone https://github.com/Lincoln951753/ISO26262_AI_Agent.git
+cd ISO26262_AI_Agent
+git log -1 --oneline
+```
+
+如在現有工作資料夾開發，請確認位於預期分支。`git clone` 預設下載公開 `main`；**目前強化版仍在本機 `assignment2-hardening` 分支，正式 Push 前 GitHub `main` 並未包含此版。**
+
+### 5.3 啟動 Podman Machine（Windows）
 
 ```powershell
 podman --version
 podman machine list
 podman machine start
-podman info
-
-git clone https://github.com/Lincoln951753/ISO26262_AI_Agent.git
-cd ISO26262_AI_Agent
 ```
 
-若 Machine 已經啟動，`podman machine start` 顯示「已執行」相關訊息時可略過。若尚未建立 Machine，請先透過 Podman Desktop 完成初始化。
+Machine 已經 `Currently running` 時，不需要重新啟動。確認引擎可用：
 
-### 5.3 建立網路並啟動 Ollama
+```powershell
+podman ps -a
+podman network ls
+```
+
+### 5.4 建立網路與 Ollama Container
+
+**首次建立**（既有同名容器／網路時不要重複執行建立命令）：
 
 ```powershell
 podman network create iso26262-net
 podman run -d --name ollama --network iso26262-net -p 127.0.0.1:11434:11434 -v ollama:/root/.ollama docker.io/ollama/ollama:latest
 podman exec ollama ollama pull qwen3:4b-instruct
-podman exec ollama ollama list
 ```
 
-同名網路／容器已存在時**不必重複建立**。可先用 `podman ps -a`、`podman network ls` 檢查；若 `ollama` 容器已停止，使用 `podman start ollama`。若既有容器未連上 `iso26262-net`，使用 `podman network connect iso26262-net ollama`。
+如果容器已存在但停止，執行 `podman start ollama`；如容器未加入專用網路，確認後執行 `podman network connect iso26262-net ollama`。
 
-測試 Ollama API 與容器之間的 DNS／HTTP：
+檢查：
 
 ```powershell
+podman exec ollama ollama list
 Invoke-RestMethod -Uri http://127.0.0.1:11434/api/version
-podman run --rm --network iso26262-net docker.io/library/python:3.12-slim python -c "import urllib.request; print(urllib.request.urlopen('http://ollama:11434/api/version').read().decode())"
+podman inspect ollama --format "{{json .NetworkSettings.Networks}}"
 ```
 
-`OLLAMA_BASE_URL=http://ollama:11434` 是 **Podman 網路中 Agent 容器連接 Ollama 的位址**；不要改成 Agent 容器內部的 `localhost`。
+### 5.5 建立 Python Agent Image
 
-### 5.4 Build Python Agent Container
-
-在 Repository 根目錄執行：
+在包含 `Containerfile` 的專案根目錄：
 
 ```powershell
 podman build -t iso26262-agent:dev -f Containerfile .
 ```
 
-`Containerfile` 會安裝 `requirements.txt` 並複製 `agent.py`、`tools/`、`test_data/`。修改程式或模擬 Excel **後必須重新 Build**，才能讓容器使用新版內容。
+**測試重新安裝套件**（選做，較嚴格的可重現性檢查）：
 
-### 5.5 執行正常案例（TC-01）
+```powershell
+podman build --no-cache -t iso26262-agent:verify-nocache -f Containerfile .
+```
+
+`Containerfile` 也包含 `COPY test_tool.py .`，讓 unittest 可以直接在 Podman 內執行。**修改 Python 或 Excel 後需重新 Build**；重跑舊 Image 不能驗證新版檔案。
+
+### 5.6 執行 TC-01（正常工具執行）
 
 ```powershell
 podman run --rm --network iso26262-net -e OLLAMA_BASE_URL=http://ollama:11434 -e REVIEW_FILE=safety_requirements.xlsx iso26262-agent:dev
 ```
 
-**應觀察到：** `Agent Decision (before Tool Call)`、`traceability_check`、`Observation`、`Agent Decision (after Observation)`、`Final Answer`，並指出 **FSR-002（Excel 第 3 列）缺少 TSR**。
+應有六段 Trace，Tool Observation 需要顯示 `FSR_WITHOUT_TSR`、`FSR-002`、Excel row 3。強化版成功路徑的 `Next Node` 為 `finalize`，已在本機 Podman 實測。正常執行應回傳 Exit Code `0`；發現需求缺漏不代表程式失敗。
 
-### 5.6 執行兩個 Failure Cases
+### 5.7 執行 FC-01 與 FC-02（兩個 Failure Cases）
 
 ```powershell
-# FC-01: 檔案不存在
+# FC-01：檔案不存在
 podman run --rm --network iso26262-net -e OLLAMA_BASE_URL=http://ollama:11434 -e REVIEW_FILE=not_found.xlsx iso26262-agent:dev
 
-# FC-02: FSR 必要欄位 SG_ID 不存在
+# FC-02：FSR 缺少 SG_ID 欄位
 podman run --rm --network iso26262-net -e OLLAMA_BASE_URL=http://ollama:11434 -e REVIEW_FILE=fc02_missing_column.xlsx iso26262-agent:dev
 ```
 
-**應觀察到：** `Observation Status: error`、`Next Node: error`，並分別回報 File Not Found、`FSR missing columns: ['SG_ID']`。
+預期都會出現 `Observation Status: error`、`Next Node: error`，分別回報 `File not found` 與 `FSR missing columns: ['SG_ID']`。兩個案例屬於**系統正確處理錯誤輸入**，不是檔案審查通過；強化版預期 Exit Code `1`。
 
-### 5.7 儲存測試 Trace（PowerShell）
+### 5.8 FC-03：Ollama 服務連線失敗
 
-在 Repository 根目錄執行，三條命令會覆蓋既有檔案：
+刻意將 Ollama URL 設成不存在的連接埠，**不必停止既有 Ollama 容器**：
+
+```powershell
+podman run --rm --network iso26262-net -e OLLAMA_BASE_URL=http://ollama:19999 -e REVIEW_FILE=safety_requirements.xlsx iso26262-agent:dev
+Write-Host "FC-03 Exit Code: $LASTEXITCODE"
+```
+
+預期 `LLM service error (ConnectError)`，沒有未處理的 Python Traceback，Exit Code 為 `1`。此案例在強化版已實測通過。
+
+### 5.9 在 Podman 執行自動化 Tool 測試
+
+```powershell
+podman run --rm --entrypoint python iso26262-agent:dev test_tool.py
+Write-Host "Tool Test Exit Code: $LASTEXITCODE"
+```
+
+預期 `Ran 17 tests`、`OK`、`Exit Code: 0`。17 組測試驗證**Python Excel Tool**，並非 17 組含 Qwen3 的端到端 Agent 測試。`test_tool.py` 利用 `unittest`、`openpyxl` 和暫存 Excel 進行測試，不需要 Ollama 容器。
+
+### 5.10 保存執行 Trace 與測試日誌
+
+在專案根目錄建立 `logs/` 後執行：
 
 ```powershell
 cmd /c "podman run --rm --network iso26262-net -e OLLAMA_BASE_URL=http://ollama:11434 -e REVIEW_FILE=safety_requirements.xlsx iso26262-agent:dev > logs\tc01_trace.txt 2>&1"
 cmd /c "podman run --rm --network iso26262-net -e OLLAMA_BASE_URL=http://ollama:11434 -e REVIEW_FILE=not_found.xlsx iso26262-agent:dev > logs\fc01_trace.txt 2>&1"
 cmd /c "podman run --rm --network iso26262-net -e OLLAMA_BASE_URL=http://ollama:11434 -e REVIEW_FILE=fc02_missing_column.xlsx iso26262-agent:dev > logs\fc02_trace.txt 2>&1"
+cmd /c "podman run --rm --network iso26262-net -e OLLAMA_BASE_URL=http://ollama:19999 -e REVIEW_FILE=safety_requirements.xlsx iso26262-agent:dev > logs\fc03_trace.txt 2>&1"
+cmd /c "podman run --rm --entrypoint python iso26262-agent:dev test_tool.py > logs\tool_unittest_trace.txt 2>&1"
 ```
 
-先前使用 PowerShell 5.1 的 `Tee-Object` 曾發生中文亂碼，因此本專案改用 `cmd /c` 重導向並檢查文字檔內容。完成後可用 VS Code 開啟 `logs/*.txt`，確認沒有編碼問題。
+**重要：** 上述 `:dev` 是正式 Clone 後的建置標籤；本次開發驗證使用 `iso26262-agent:hardening`。任何程式修改後都應重新 Build、確認每組 Exit Code，再檢查 `logs` 中中文是否正常。PowerShell 5.1 的 `Tee-Object` 曾出現中文亂碼，因此這裡使用 `cmd /c` 重導向。
 
----
+## 6. Agent Trace：強化版實際執行結果
 
-## 6. 完整 Agent 執行追蹤（Trace）
+> 下列內容依照使用者在 **Windows 11 + WSL2 + Podman** 執行 `iso26262-agent:hardening` 後提供的真實輸出整理；同時已保存於 `logs/`。測試所在分支為本機 `assignment2-hardening`，**目前尚未合併／推送正式 `main`，也尚未完成強化版乾淨 Clone 或跨平台驗證**。
 
-本節直接列出三組**實際執行後的終端機輸出**，而不只提供檔案連結，讓老師在 README 就能看到完整流程。三組輸出均來自 Windows / WSL2 / Podman / Ollama 的本機執行測試；LLM 自然語言回答可能因模型生成而略有差異，**Tool Observation 與路由判斷才是主要驗收依據**。
+### 6.1 TC-01：正常工具呼叫並發現 FSR 缺少 TSR
 
-**作業要求的六步驟：** `User Input → Agent Decision → Tool Call → Observation → Agent Decision → Final Result`
-
-### 6.1 TC-01：正常格式，有一筆追溯缺漏
-
-**Input：** `safety_requirements.xlsx`。**預期：** 工具成功執行，找到 `FSR-002` 沒有 TSR，且提供實際 Excel 列號。
+**Input**：`safety_requirements.xlsx`；**預期**：`FSR-002` 缺少 TSR、Excel 第 3 列；**實際 Exit Code：0（PASS）**。
 
 ```text
 === User Input ===
-請使用工具檢查 safety_requirements.xlsx 的 SG、FSR、TSR 追溯關係，列出問題與 Excel 列號。如果檔案不存在，請明確回報錯誤，不要自行推測審查結果。
+請使用工具檢查 safety_requirements.xlsx 的 SG、FSR、TSR 追溯關係，列出問題與 Excel 列號；如果檢查無法完成，請回報錯誤。
 
 === Agent Decision (before Tool Call) ===
 Decision: call the tool(s) listed below
@@ -368,25 +399,26 @@ Arguments: {'file_path': 'safety_requirements.xlsx'}
 
 === Agent Decision (after Observation) ===
 Observation Status: success
-Next Node: agent
-Reason: Tool check succeeded; return results to the LLM for analysis.
+Next Node: finalize
+Reason: Valid Tool Observation; produce an evidence-based final result.
 
 === Final Answer ===
-追蹤問題：
-- FSR-002（Excel 第 3 列）無對應的 TSR 要求。
+SG／FSR／TSR 結構化追溯性檢查已完成（工具執行成功）。
+SG：2 筆；FSR：2 筆；TSR：1 筆。
+發現 1 項追溯性問題：
+- FSR_WITHOUT_TSR：FSR-002（Excel 第 3 列）。
+注意：這是模擬 Excel 的結構檢查，並非 ISO 26262 條款或符合性判定。
 ```
 
-**判讀：** LLM 決定使用工具；Python Tool 實際讀取 Excel；LangGraph 因 `status=success` 回到 LLM；最終回答與 Tool Observation 的 ID、列號一致。`issue_count=1` 表示找到一筆缺漏，**不是正式 ISO 26262 合規評定**。
+完整保存檔：[`logs/tc01_trace.txt`](logs/tc01_trace.txt)。
 
-**完整紀錄檔：** [logs/tc01_trace.txt](logs/tc01_trace.txt)
+### 6.2 FC-01：Excel 不存在
 
-### 6.2 FC-01：檔案不存在
-
-**Input：** `not_found.xlsx`（刻意不提供此檔案）。**預期：** 回報找不到檔案，不編造追溯性結果。
+**Input**：`not_found.xlsx`；**預期**：回報不存在、不虛構資料；**實際 Exit Code：1（預期失敗情境處理成功）**。
 
 ```text
 === User Input ===
-請使用工具檢查 not_found.xlsx 的 SG、FSR、TSR 追溯關係，列出問題與 Excel 列號。如果檔案不存在，請明確回報錯誤，不要自行推測審查結果。
+請使用工具檢查 not_found.xlsx 的 SG、FSR、TSR 追溯關係，列出問題與 Excel 列號；如果檢查無法完成，請回報錯誤。
 
 === Agent Decision (before Tool Call) ===
 Decision: call the tool(s) listed below
@@ -401,26 +433,24 @@ Arguments: {'file_path': 'not_found.xlsx'}
 === Agent Decision (after Observation) ===
 Observation Status: error
 Next Node: error
-Reason: Tool check failed or response was invalid; use fixed error handling.
+Reason: File not found: /app/test_data/not_found.xlsx
 
 === Final Answer ===
 本次追溯性檢查無法完成。
-工具回報：File not found: /app/test_data/not_found.xlsx
-請確認並修正輸入檔案後重新執行。
-由於檢查未完成，無法判定需求追溯關係是否完整，也無法據此判定 ISO 26262 符合性。
+錯誤原因：File not found: /app/test_data/not_found.xlsx
+請確認檔案、模型服務或工具輸入後重新執行。
+沒有可靠的檢查結果，不能判定追溯性或 ISO 26262 符合性。
 ```
 
-**判讀：** Tool 正確回傳檔案不存在，`decision_node` 指向 `error`；固定錯誤訊息保留了原始 Tool 錯誤，沒有虛構缺漏需求。
+完整保存檔：[`logs/fc01_trace.txt`](logs/fc01_trace.txt)。
 
-**完整紀錄檔：** [logs/fc01_trace.txt](logs/fc01_trace.txt)
+### 6.3 FC-02：缺少必要欄位
 
-### 6.3 FC-02：FSR 缺少必要欄位 `SG_ID`
-
-**Input：** `fc02_missing_column.xlsx`。**預期：** 指出 FSR 工作表缺少 `SG_ID`，停止審查並保留確切的錯誤訊息。
+**Input**：`fc02_missing_column.xlsx`；**預期**：回報 `FSR` 缺 `SG_ID`；**實際 Exit Code：1（預期失敗情境處理成功）**。
 
 ```text
 === User Input ===
-請使用工具檢查 fc02_missing_column.xlsx 的 SG、FSR、TSR 追溯關係，列出問題與 Excel 列號。如果檔案不存在，請明確回報錯誤，不要自行推測審查結果。
+請使用工具檢查 fc02_missing_column.xlsx 的 SG、FSR、TSR 追溯關係，列出問題與 Excel 列號；如果檢查無法完成，請回報錯誤。
 
 === Agent Decision (before Tool Call) ===
 Decision: call the tool(s) listed below
@@ -435,211 +465,236 @@ Arguments: {'file_path': 'fc02_missing_column.xlsx'}
 === Agent Decision (after Observation) ===
 Observation Status: error
 Next Node: error
-Reason: Tool check failed or response was invalid; use fixed error handling.
+Reason: FSR missing columns: ['SG_ID']
 
 === Final Answer ===
 本次追溯性檢查無法完成。
-工具回報：FSR missing columns: ['SG_ID']
-請確認並修正輸入檔案後重新執行。
-由於檢查未完成，無法判定需求追溯關係是否完整，也無法據此判定 ISO 26262 符合性。
+錯誤原因：FSR missing columns: ['SG_ID']
+請確認檔案、模型服務或工具輸入後重新執行。
+沒有可靠的檢查結果，不能判定追溯性或 ISO 26262 符合性。
 ```
 
-**判讀：** Tool 回傳真實的欄位缺失；Agent 走錯誤節點，不把「缺欄位」誤判為已確認的功能安全不符合項。
+完整保存檔：[`logs/fc02_trace.txt`](logs/fc02_trace.txt)。
 
-**完整紀錄檔：** [logs/fc02_trace.txt](logs/fc02_trace.txt)
+### 6.4 FC-03：Ollama 服務無法連線
 
-> **重要：** 本節是已完成的新版**本機測試輸出**。若 GitHub 上的 `agent.py` 或 `logs/*.txt` 仍顯示舊版 `=== Agent Action ===`，請先同步本機新版原始碼及三份 Trace，才能讓 Repository 證據與本 README 完全一致。
+**Input**：正常 Excel，但設定 `OLLAMA_BASE_URL=http://ollama:19999`；**預期**：在 LLM 階段直接回報錯誤，不呼叫工具；**實際 Exit Code：1（預期失敗情境處理成功）**。
 
----
+```text
+=== User Input ===
+請使用工具檢查 safety_requirements.xlsx 的 SG、FSR、TSR 追溯關係，列出問題與 Excel 列號；如果檢查無法完成，請回報錯誤。
 
-## 7. 測試結果與兩個 Failure Cases
+=== Agent Decision (LLM Service Failure) ===
+Decision: error
 
-### 7.1 測試案例與驗收結果
+=== Final Answer ===
+本次追溯性檢查無法完成。
+錯誤原因：LLM service error (ConnectError): [Errno 111] Connection refused
+請確認檔案、模型服務或工具輸入後重新執行。
+沒有可靠的檢查結果，不能判定追溯性或 ISO 26262 符合性。
+```
 
-| Case | 類型 | 輸入／測試情境 | 預期結果 | 實際結果 | 本機測試 |
-| --- | --- | --- | --- | --- | --- |
-| **TC-01** | 正常執行／資料缺漏 | `safety_requirements.xlsx`；格式完整但 FSR-002 無 TSR | JSON `status=success` 並指出需求 ID、列號 | `FSR_WITHOUT_TSR`、`FSR-002`、Excel 第 3 列；下一節點 `agent` | **PASS** |
-| **FC-01** | Failure Case 1 | `not_found.xlsx` 不存在 | 明確報錯，不能虛構審查問題 | `File not found: /app/test_data/not_found.xlsx`；下一節點 `error` | **PASS** |
-| **FC-02** | Failure Case 2 | FSR 工作表缺少 `SG_ID` | 指出欄位錯誤，停止審查 | `FSR missing columns: ['SG_ID']`；下一節點 `error` | **PASS** |
+由於在呼叫 LLM 時已失敗，FC-03 沒有 Tool Call／Observation 是合理的；第 6.1 節的 TC-01 才是要求的完整六階段 Agent Trace。完整保存檔：[`logs/fc03_trace.txt`](logs/fc03_trace.txt)。
 
-**PASS 定義：** 本表 PASS 指該測試的 **Tool Observation、Decision 分流及 Final Answer 符合本案預期**；不代表被檢查 Excel 沒有問題，更不代表通過 ISO 26262 合規認證。
+## 7. Failure Cases、測試證據與改善方法
 
-### 7.2 Failure Case 1 — File Not Found
+| Case | 情境 | Observation / 行為 | Exit Code | 本機驗收 |
+| --- | --- | --- | ---: | --- |
+| TC-01 | FSR-002 缺少 TSR | `success`、Issue=`FSR_WITHOUT_TSR`、row 3 | `0` | PASS |
+| FC-01 | 指定不存在的 Excel | `error`、File not found | `1` | PASS |
+| FC-02 | FSR 缺少 `SG_ID` 欄位 | `error`、Missing column | `1` | PASS |
+| FC-03 | Ollama 服務無法連線 | `LLM service error`、不虛構結果 | `1` | PASS |
+| Tool unittest | 結構化 ID、欄位、引用、路徑與解析等 17 組案例 | `Ran 17 tests`、`OK` | `0` | PASS |
 
-- **錯誤情境：** `REVIEW_FILE=not_found.xlsx`，容器內 `/app/test_data/` 無此檔案。
-- **原因分析：** Python Tool 的 `Path.is_file()` 檢查失敗，無法取得 Excel 內容，不能繼續判讀 SG／FSR／TSR。
-- **系統處理：** 回傳 `status=error` 與真實檔案路徑；`decision_node` 選擇 `error`；`error_node` 說明檢查未完成。
-- **改善／使用者處置：** 確認檔名與檔案是否放入 `test_data/`，若新增檔案則重新 Build Agent Image，再重新執行。
-- **驗證：** 第 6.2 節與 [FC-01 Trace](logs/fc01_trace.txt)，結果 PASS。
+**Failure Case 1 — File Not Found：** 輸入 `not_found.xlsx`，工具因找不到檔案返回錯誤；Agent 進入 `error_node` 並保留錯誤原因，不編造缺漏或 ISO 26262 判定。排除方式為確認 `test_data/` 是否有正確檔名、必要時重新 Build 後執行。
 
-### 7.3 Failure Case 2 — Missing Required Column
+**Failure Case 2 — Missing Required Column：** FSR 工作表缺少 `SG_ID` 欄，工具不能建立 FSR → SG 引用；返回 `FSR missing columns: ['SG_ID']` 並停止審查。排除方式為補上正確欄名與資料後重新測試。
 
-- **錯誤情境：** 使用缺少 `SG_ID` 必要欄位的模擬 Excel。
-- **原因分析：** FSR 無法提供所對應的 SG ID，檢查程式不能可靠地建立 FSR → SG 關聯。
-- **系統處理：** 回傳 `FSR missing columns: ['SG_ID']`，路由至 `error_node`，而不是編造需求行號或 ISO 26262 判斷。
-- **改善／使用者處置：** 補齊 FSR 表的 `SG_ID` 欄，確認欄名符合工具定義，再重新檢查；若修改測試檔，需重新 Build。
-- **驗證：** 第 6.3 節與 [FC-02 Trace](logs/fc02_trace.txt)，結果 PASS。
+**Failure Case 3 — LLM Service Failure：** 模擬 API Port 錯誤，Qwen3 無法連線；Agent 捕捉 `ConnectError`，不再進行 Tool Calling。排除方式為核對 Ollama 容器、模型、網路和 `OLLAMA_BASE_URL`。
 
-### 7.4 為何最後增加 `error_node`？
+**為何要程式化處理 Error？** 開發過程曾發現 LLM 在工具失敗時自行增加不存在的欄位或列號，因此把錯誤輸出交給程式，不依賴另一輪自由文字生成。`status=success` 表示工具執行成功；即使 `issue_count>0`，程序仍應正常退出 `0`。缺檔、缺欄位、LLM 失聯等無法完成審查時，程序回傳非零 `1`，可供腳本和 CI 判定。
 
-開發初期，工具回報 `status=error` 後仍將結果交由 LLM 自由生成，曾出現模型額外補充不存在的行號／欄位。即使強化 Prompt，仍不能保證每次都正確。因此改為**用程式決定錯誤路徑，直接引用 Observation**，減少模型幻覺造成的錯誤結論。這是實際測試後採取的流程改善，而非只停留在規劃文件。
+### 7.1 自動化 Tool 測試（17 組）
 
----
+[`test_tool.py`](test_tool.py) 使用 Python `unittest` 及暫存 Excel，自動建立並檢查有效引用、缺漏引用、重複 ID、歧義引用、空白欄位、全空列、無資料、缺工作表、缺必要欄名、重複表頭、缺檔、非法路徑、非 xlsx 及損壞活頁簿等案例。只檢查專案自訂資料結構，不判定 ISO 26262 合規性。
 
-## 8. 容器化驗證、重現性與驗收門檻
+實測執行：
 
-### 8.1 目前完成的環境驗證
+```powershell
+podman run --rm --entrypoint python iso26262-agent:hardening test_tool.py
+```
 
-| 驗證事項 | 已觀察到的結果 |
+```text
+Ran 17 tests in 0.147s
+
+OK
+Exit Code: 0
+```
+
+完成的測試證據存放於 [`logs/tool_unittest_trace.txt`](logs/tool_unittest_trace.txt)；`logs/` 中的完整輸出比本節節錄更適合用來檢查測試名稱。
+
+### 7.2 手動補充情境與修正紀錄
+
+除了自動化測試，使用者另在 Podman 以暫存 Excel 驗證：TC-02 重複 FSR ID、TC-03 空白 ID/Description、TC-04 無效 SG/FSR 引用，以及 TC-05 正常且沒有 Issue 的雙鏈結需求。這些是 **Tool 層級的臨時容器測試**，不是四組獨立的 LLM 端到端 Agent Trace。
+
+TC-02 第一次執行時除正確的 `DUPLICATE_FSR_ID`、`AMBIGUOUS_FSR_REFERENCE` 外，還出現不應有的 `SG_WITHOUT_FSR`。經分析是把子需求 ID 有效性與「子需求是否存在引用」混為一談；修正工具後重新執行，**只保留兩筆正確 Issue** 並通過 `assert issue_count == 2`。此例展示先觀察實際執行結果、定位誤判、修改程式與回歸測試的過程。
+
+**尚未端到端驗證的分支：** LLM 連續不呼叫 Tool、模型產生多個或錯誤 Tool Call、不合法 Observation。這些功能有保護性程式邏輯，但不能在沒有實際測試之前標示 PASS。
+
+## 8. 可重現性、已完成驗證與繳交前驗收
+
+### 8.1 GitHub 舊版乾淨 Clone 驗證（已完成）
+
+使用者於 **2026-11-22** 在同一台 Windows 11 + WSL2 + Podman 主機上建立另一個資料夾 `ISO26262_AI_Agent_Verify`，從公開 GitHub 取得當時 `main` Commit：`a7701e2 docs: simplify README for assignment submission`。
+
+| 驗證 | 實際結果 |
 | --- | --- |
-| Podman Linux Container | `hello-world` 可執行 |
-| Ollama Container | 可使用 `/api/version` 與下載模型 |
-| Agent → Ollama | 透過 `http://ollama:11434` 通訊，模型可輸出 Tool Call |
-| Python Tool | 真的讀取 Excel 並回傳 JSON |
-| LangGraph | Success / Error 兩路分流可觀察 |
-| Agent End-to-End | TC-01、FC-01、FC-02 三組皆已在本機執行成功 |
-| Trace | 三組輸出皆顯示兩次 Decision 及 Final Answer |
+| Git Clone 與 Commit | 成功，`a7701e2` |
+| Podman CLI / Machine | 6.1.4，WSL Machine 執行中 |
+| Ollama / Model | `ollama` 連接 `iso26262-net`；`qwen3:4b-instruct`、模型 ID `0edcdef34593` |
+| 原版容器重新 Build | 成功；第一輪部分步驟使用 Cache |
+| 原版 TC-01、FC-01、FC-02 | 三組端到端行為符合預期 |
+| `--no-cache` 重新 Build | 成功；重新執行 Python 套件安裝 |
+| 無快取 Image 再跑 TC-01 | 成功 |
 
-### 8.2 重現性現況與限制
+這是**同一台主機不同資料夾的重新下載／建置測試**。`--no-cache` 不代表另一個作業系統或全新主機，也不保證重新拉取所有基底映像。
 
-課程強調 Agent 必須可以透過 **Podman Engine** 執行，並重視在不同平台重現。**目前確認的是 Windows 11 + WSL2 + Podman 環境；尚未在另一台乾淨電腦或不同作業系統完整驗證，因此不能宣稱已達成跨平台實測。**
+### 8.2 強化版本機 Podman 驗證（已完成）
 
-目前也尚未完成完全鎖版的依賴管理：`requirements.txt` 對部分 LangGraph / LangChain 套件使用版本區間，Ollama Image 使用 `latest`。這可能造成未來重新部署時的版本差異。另尚未驗證 GPU passthrough，現階段不以 GPU 為必要條件。
+強化版位於本機 `assignment2-hardening` 分支，使用 Image `iso26262-agent:hardening`。經 Podman 重新 Build 並實測：
 
-### 8.3 本階段明確驗收標準
-
-| 驗收目標 | 可觀察門檻 | 狀態 |
-| --- | --- | --- |
-| Agent 可以實際執行 | Podman Container 能啟動並完成一次端到端工作 | 已達成（本機） |
-| 有真正執行的 Tool | Observation 來自 Python Excel 解析，不是模型自行生成 | 已達成 |
-| 決策與流程可追蹤 | Trace 包含輸入、兩次 Decision、Tool、Observation、Final Answer | 已達成（本機） |
-| 正常案例正確 | TC-01 找出 FSR-002 並回報第 3 列 | 已達成 |
-| 至少兩種錯誤情境 | FC-01、FC-02 都走固定錯誤路徑且不捏造結果 | 已達成 |
-| Repository 可供他人部署 | 包含原始碼、Containerfile、README、模擬資料、測試紀錄 | 文件／檔案已建立，需確認最新版本同步 |
-| 乾淨環境重新 Clone → Build → Run | 在新目錄完整執行並保存結果 | 尚待驗證 |
-| 不同平台 Podman 重現 | 在另一平台完成同樣測試並保存結果 | 尚待驗證 |
-
----
-
-## 9. 開發過程：技術理解、AI 輔助與實作驗證
-
-### 9.1 開發方式與 AI 輔助範圍
-
-本專案以對 **LLM、AI Agent、Tool Calling 及程式執行流程的基本理解**為基礎，進行系統架構規劃與功能實作，並使用 ChatGPT 作為輔助開發工具，協助程式撰寫、技術設定與問題排除。
-
-在架構設計上，理解 Agent 如何接收任務、由 LLM 選擇 Tool、交由 Python 執行實際工作，以及根據 Observation 由 LangGraph 進行條件式分流。AI 主要協助以下內容：
-
-- **程式開發輔助：** 提供部分 Python Tool、LangGraph 節點與 Trace 輸出的程式範例，依需求進行修改。
-- **環境建置：** 提供 Podman、Ollama、LangGraph 的安裝、設定與容器通訊建議。
-- **問題分析與除錯：** 協助判讀錯誤訊息，討論可行修正方式。
-- **測試設計：** 協助整理正常案例、Failure Cases、預期結果與驗收方法。
-- **文件整理：** 輔助撰寫 README、Tool Definition、測試與專案說明。
-
-AI 提供的建議或程式碼**不直接等於已驗證成果**。本專案透過實際建置、執行、觀察 Console / Trace、確認結果及重新測試，才將相應功能標示為完成。開發方式是**理解原理 + AI 輔助實作 + 實際操作與驗證**，並不宣稱全部程式碼皆由學生獨立從零撰寫。
-
-### 9.2 實際操作與確認的工作
-
-| 開發階段 | 實際執行及確認的內容 |
+| 項目 | 驗收結果 |
 | --- | --- |
-| 執行環境 | 安裝 WSL2、Podman Desktop / CLI，建立並啟動 Podman Machine |
-| 容器基本驗證 | 執行 `hello-world`，確認可啟動 Linux 容器 |
-| 本地 LLM | 建立 Ollama 容器、下載 Qwen3、測試 `/api/version` 與模型呼叫 |
-| Tool Calling | 透過 Ollama API 確認模型可輸出 `traceability_check` 與 `file_path` |
-| Python Tool | 在 VS Code 建立工具與模擬 Excel，利用 Podman 執行並檢查 JSON |
-| Agent Workflow | 建立 LangGraph Agent，驗證 Action、Observation 與分流結果 |
-| 決策追蹤 | 增加 `decision_node`，實際確認 `success → agent` / `error → error` |
-| 測試與修正 | 執行 TC-01、FC-01、FC-02，依測試結果修改、重建與再測 |
-| 版本管理與文件 | 保存 Trace、整理 README / Tool Definition、建立 Git 與 GitHub Repository |
+| `agent.py` 強化版 TC-01 | PASS，`finalize`、`FSR-002` row 3、Exit Code 0 |
+| FC-01 檔案不存在 | PASS，`error`、Exit Code 1 |
+| FC-02 必要欄位不存在 | PASS，`error`、Exit Code 1 |
+| FC-03 Ollama 連線失敗 | PASS，`ConnectError`、Exit Code 1 |
+| 重複 FSR ID 誤判修正 | PASS，僅 2 筆預期 Issue |
+| 空白欄位、無效引用、完全正常需求 | 手動 Tool 測試 PASS |
+| `test_tool.py` unittest | 17 / 17 PASS，Exit Code 0 |
+| 重新產出 Trace | `logs/tc01_trace.txt`、`fc01_trace.txt`、`fc02_trace.txt`、`fc03_trace.txt` 與 `tool_unittest_trace.txt` |
 
-### 9.3 開發中遇到的問題與解決
+**仍未完成：** 強化版合併／Push 後從 GitHub 再次乾淨 Clone → Build → Run，以及另一作業系統上的獨立 Podman 重現。不能把 8.1 的舊版 Clone 結果等同於強化版的 GitHub 重現，也不能宣稱跨平台已驗證。
 
-| 遇到的問題 | 原因分析與修正 | 驗證結果 |
+### 8.3 驗收門檻與現況
+
+| 驗收項目 | 通過門檻 | 現況 |
 | --- | --- | --- |
-| PowerShell 出現 `host directory cannot be empty` | 修正掛載路徑展開方式，由 `${PWD.Path}` 改為 `$($PWD.Path)` | Tool 容器可讀取測試 Excel |
-| Python `IndentationError` | 統一程式區塊縮排，使用 `ast.parse()` 驗證語法 | 顯示 `Syntax OK`，後續容器可執行 |
-| `REVIEW_FILE` 指定後仍使用舊檔名 | 確認環境變數讀取，修改並儲存 `agent.py` 後重新 Build | FC-01 正確呼叫 `not_found.xlsx` |
-| Trace 中文亂碼 | `Tee-Object` 文字編碼不符合預期，改用 CMD 重導向 | UTF-8 中文內容可正常檢視 |
-| LLM 在錯誤情境編造欄位與行號 | Prompt 補強仍有風險；改由 `error_node` 固定處理 `status=error` | FC-02 正確回報 `SG_ID` 缺漏 |
-| Trace 未清楚列出第二次決策 | 增加 `decision_node` 與 `tool_decision` 狀態欄位 | 三組測試均顯示 Observation 後的下一個節點 |
+| Working Agent | Podman 正常案例完成完整流程 | 強化版本機 PASS |
+| Tool Calling | Python Tool 真正讀取模擬 Excel | 強化版本機 PASS |
+| 完整 Agent Trace | Input → Decision → Tool → Observation → Decision → Final | 強化版 TC-01 PASS |
+| 錯誤處理 | 兩組以上 Failure Cases，不編造結果 | FC-01～03 PASS |
+| Exit Code | 成功 0；無法完成檢查非零 | TC-01 0；FC-01～03 1，PASS |
+| 自動化測試 | 可重跑，能判斷 PASS / FAIL | 17 組 Tool unittest PASS |
+| 同機 GitHub 乾淨 Clone | 從公開 Repo 建置並執行 | 舊版 `a7701e2` PASS；強化版 Push 後待重驗 |
+| 跨平台 Podman | 另一作業系統獨立 Build / Run / Test | 尚未驗證 |
+| 依賴版本 | 核心套件與容器映像可精確重現 | 尚未完全鎖版 |
 
-### 9.4 技術理解與設計理由
+### 8.4 依賴、環境與失敗情境注意事項
 
-**（1）為何不能只靠 LLM 直接閱讀與回答？**  
-模型可能誤解 SG / FSR / TSR，或對不存在的資料生成合理但不正確的內容。對於可規則化的 Excel 欄位與 ID 引用檢查，使用 Python 更容易得到可驗證的結果。
+LangGraph / LangChain 的部分 Python 套件版本仍使用範圍，Ollama 容器仍使用 `latest`；時間不同可能裝到不同版本。正式繳交前應記錄實際套件版本，並視情況固定依賴。`ollama` 模型需要足夠記憶體；部署異常時應檢查 Podman Machine 資源與 API 可用性。
 
-**（2）Tool Calling 是否代表 LLM 直接執行 Python？**  
-不是。LLM 輸出工具名稱與參數，真正執行的是 LangGraph Tool Node 呼叫 Python 函式。Observation 才是實際工具的輸出。
+強化版應在 Push 後重新從 GitHub Clone，確認 `README.md`、`agent.py`、`tools/traceability_check.py`、`test_tool.py`、`Containerfile` 及 `logs/` 都是同一個 Commit。若跨平台測試無法於截止前完成，須明確保留限制說明，不可當成已通過。
 
-**（3）為何使用 LangGraph？**  
-StateGraph 可以將 LLM、Tool、Decision、Error 拆開，使用條件邊控制成功與失敗路徑，讓每個階段的輸入輸出與錯誤原因都可以觀察。
+## 9. 開發歷程、原理理解與 AI 輔助說明
 
-**（4）為何需要 Error Node？**  
-Tool 出錯代表沒有可靠的檢查結果。若仍直接交給 LLM，可能產生未驗證的結論。因此由 Python 固定產出錯誤資訊，降低不實回答的可能。
+### 9.1 AI 使用方式與課堂規範
 
-**（5）本專案是否已完成 ReAct 或 Replanning？**  
-沒有。本專案採用 **Tool Calling + State-based Decision**，具備 Observation 後的條件式分流，但尚未實作完整的多步規劃或失敗後自主重試策略。此區分與實作內容一致。
+依老師課堂口頭說明，**允許使用 ChatGPT、Claude、Gemini 等生成式 AI**，協助架構規劃、程式撰寫、除錯、技術概念理解與文件整理。但 AI 輔助不代表可以在不了解專案的情況下完全交由 AI 代做。學生仍須實際參與開發、理解 Agent 架構、Tool Calling、技術選擇，並自行執行、測試與驗證。
 
-**（6）為何使用 Podman？**  
-課程要求 Agent 能以 Podman Engine 執行。容器可封裝 Python 執行環境，並藉由網路連接 Ollama，減少直接依賴主機上 Python 套件的情況。
+本專案採 **AI-assisted Development（AI 輔助開發）與 Active Learning（主動學習）**。我不是把 AI 產出的程式碼直接視為完成，而是透過對話追問設計原因、理解每個節點與工具的責任，將建議和課程學到的概念對照，再於 VS Code、PowerShell、Podman 中實際操作、觀察 Console Trace；若實際行為不符預期，就依錯誤訊息持續修正並重新驗證。
 
-### 9.5 本階段開發收穫
+> **AI 輔助學習的價值，不在於 AI 幫我寫了多少程式碼，而在於我是否真正吸收、理解、能用自己的話說明，並將所學應用於實際開發與驗證。與 AI 互動是學習過程；能獨立解釋、操作、測試和承擔成果，才代表知識轉化為自己的能力。**
 
-本次作業從第一次的架構規劃，實際完成 **LLM Tool Calling → Python Tool → Observation → LangGraph 決策 → Final Answer** 的可執行閉環。除理解各元件如何合作外，也透過實際除錯發現：**Agent 的可靠性不能只依賴提示詞，仍需要明確的工具規則、狀態控制與可追溯的測試證據。**
+本專案部分 Python 程式、部署指令、錯誤處理邏輯與 README 由 ChatGPT 協助產生或重構，**不宣稱所有程式都是自行從零編寫**。實際參與內容包括：確定 ISO 26262 文件追溯性問題與 MVP 範圍、理解 Tool Calling 與 LangGraph 分流、建立 Podman/Ollama 環境、執行 GitHub Clone 與無快取 Build、觀察三組測試結果、理解失敗原因並要求重構。在強化版上，我親自執行本機 Podman Build、四個 Agent 案例、17 組 unittest，並針對重複 FSR ID 的誤判，透過對照 Observation 與 AI 討論邏輯、修改 Tool、重新測試；也驗證 Error Handling 的 Exit Code 由 0 改為 1。**AI 提供程式建議不代表自動通過驗收，必須由實際執行與觀察結果證明。**
+
+### 9.2 具體學到的技術
+
+| 主題 | 我需要能清楚解釋的原理 |
+| --- | --- |
+| LLM / Agent 差異 | LLM 生成工具請求；Agent Workflow 負責控制何時執行與如何根據結果決策 |
+| Tool Calling | 模型提出 `name` + `arguments`，但不會自己執行 Python |
+| Observation | Python Tool 的 JSON 才是列號、ID、缺漏的來源 |
+| StateGraph | 分離 agent、tools、decision、finalize、error 節點，使用條件邊控制流程 |
+| Error Handling | 真實 Tool Error 不應交由模型猜測或產生無依據的合規判斷 |
+| 容器 | Podman 封裝 Python 執行環境，Agent 透過專用網路向 Ollama API 發出請求 |
+| 測試與證據 | 設計上可行不等於已通過；只有實際執行並觀察結果才能標示 PASS |
+
+### 9.3 實際除錯與回歸測試經驗
+
+| 問題 | 原因與處置 |
+| --- | --- |
+| PowerShell `host directory cannot be empty` | 掛載變數格式錯誤，改用 `$($PWD.Path)` |
+| Python `IndentationError` | 統一縮排，透過 `ast.parse()` 驗證語法 |
+| `REVIEW_FILE` 指定後仍使用舊檔名 | 修正環境變數讀取、儲存程式、重新 Build Image |
+| Trace 中文亂碼 | PowerShell 5.1 `Tee-Object` 編碼問題，改用 CMD 重導向 |
+| 工具失敗時 LLM 虛構欄位或列號 | 不僅改 Prompt，改由確定性的 `error_node` 處理 |
+| 只有一段 Decision Trace | 加入 `decision_node` 與 `tool_decision` 狀態，保存 Observation 後決策 |
+| LLM 服務失敗但 Exit Code 為 0 | 加入 CLI 結束狀態判斷，實測錯誤回傳 1、正常工具檢查回傳 0 |
+| 重複 FSR ID 導致額外回報 `SG_WITHOUT_FSR` | 分開處理有效引用與子需求是否存在，修正後重複 ID 情境只保留兩筆正確 Issue |
+| 測試程式只有 print，無法自動判定錯誤 | 改成 17 組 `unittest` 並在 Podman 內執行 |
+
+### 9.4 技術選擇的口頭說明要點
+
+**為何不直接用 LLM 判讀 Excel？** ID、欄位、引用存在性屬於可程式化的確定性問題，Python 規則更方便驗證；LLM 適合從任務中選擇工具。
+
+**為何是 LangGraph 而非只有 Python if/else？** LangGraph 使 Agent、Tool、Decision 與 Error 成為可觀察的節點與狀態轉移，能建立完整 Trace，也便於下一階段擴充。
+
+**為何成功時改採程式化 Final Answer？** 安全需求 ID、Excel 列號應有實際工具證據；程式化輸出可以降低回答流暢但不可靠的風險。LLM 仍參與工具選擇。
+
+**為何不是完整 ReAct / RAG？** 本期只有單一結構化 Tool；有限重試不是全面 Planning。RAG 尚未取得可合法檢索並準確引用的標準知識庫，暫不宣稱具備條款審查能力。
 
 ---
 
-## 10. 原始碼與提交檔案索引
+## 10. Repository 檔案與後續規劃
 
-所有必要成果均可從本 Repository 取得；老師不需要依賴另一份成果報告才知道如何執行或檢查程式。
+### 10.1 程式與文件索引（強化版預期提交內容）
 
 ```text
 ISO26262_AI_Agent/
-├── README.md                    # 指定作業二主要實作說明與完整證據
-├── agent.py                     # LangGraph Agent / Decision / Error / CLI Trace
-├── Containerfile                # Podman Agent 容器建置
-├── requirements.txt             # Python 套件需求
-├── TOOL_DEFINITION.md           # 獨立 Tool 規格文件
-├── test_tool.py                 # Python Tool 獨立執行示例（主機環境）
+├── README.md
+├── agent.py
+├── Containerfile
+├── requirements.txt
+├── TOOL_DEFINITION.md
+├── test_tool.py                 # 17 組 unittest
 ├── tools/
-│   └── traceability_check.py    # openpyxl 追溯性檢查
+│   └── traceability_check.py
 ├── test_data/
-│   ├── safety_requirements.xlsx # TC-01 模擬資料
-│   └── fc02_missing_column.xlsx # FC-02 模擬資料
+│   ├── safety_requirements.xlsx
+│   └── fc02_missing_column.xlsx
 └── logs/
-    ├── tc01_trace.txt           # 正常案例完整 Trace
-    ├── fc01_trace.txt           # 缺少檔案 Failure Case
-    └── fc02_trace.txt           # 缺少欄位 Failure Case
+    ├── tc01_trace.txt
+    ├── fc01_trace.txt
+    ├── fc02_trace.txt
+    ├── fc03_trace.txt
+    └── tool_unittest_trace.txt
 ```
 
-- **Agent 原始碼：** [agent.py](agent.py)
-- **Python Tool：** [traceability_check.py](tools/traceability_check.py)
-- **Tool 規格：** [TOOL_DEFINITION.md](TOOL_DEFINITION.md)
-- **Podman 建置：** [Containerfile](Containerfile)
-- **套件依賴：** [requirements.txt](requirements.txt)
-- **正常案例 Trace：** [logs/tc01_trace.txt](logs/tc01_trace.txt)
-- **Failure Case 1 Trace：** [logs/fc01_trace.txt](logs/fc01_trace.txt)
-- **Failure Case 2 Trace：** [logs/fc02_trace.txt](logs/fc02_trace.txt)
+- **Agent：** [`agent.py`](agent.py)
+- **Excel Tool：** [`tools/traceability_check.py`](tools/traceability_check.py)
+- **Tool Definition 補充：** [`TOOL_DEFINITION.md`](TOOL_DEFINITION.md)
+- **Podman 建置：** [`Containerfile`](Containerfile)
+- **Python 相依性：** [`requirements.txt`](requirements.txt)
+- **17 組可重跑測試：** [`test_tool.py`](test_tool.py)
+- **實測日誌：** [`logs/`](logs/)
 
----
+開發時建立的 `tools/traceability_check.backup.py` 為本機備份，不屬於正式交付；**請不要用 `git add .` 一併提交**。
 
-## 11. 已知限制、後續時程與改善方向
+### 10.2 目前限制
 
-### 11.1 已知限制
+1. **尚未整合 ISO 26262 正式標準文件**，沒有條款檢索 RAG，也不能判定標準或產品符合性；目前只是模擬 Excel 的結構化 ID 審查 MVP。
+2. Excel Tool 可找出已列出的 ID／欄位／引用問題，但不理解需求語義、不審查 ASIL 分配、設計／測試證據或多對多追溯。
+3. 輸入限定專案 `test_data/` 的特定 `.xlsx` Schema，沒有 PDF 解析、檔案上傳、Web UI、報告下載或 SQLite 審查歷史管理。
+4. 有限無工具重試及不合法 Observation 的防護已編寫，但尚未完成獨立的 Agent 層級端到端測試。
+5. 強化版已在本機 Podman 測試；尚未完成新 Commit 的 GitHub 乾淨 Clone，以及另一個作業系統的獨立重現，依賴版本也尚未完全固定。
 
-1. 目前僅支援**此專案定義的 Excel 格式及結構化 ID 關聯**，不判讀安全需求文字的語義一致性。
-2. 尚未導入 ISO 26262 正式條款 RAG、PDF 解析、ASIL 合理性分析、驗證證據查核或 Gap Analysis Report。
-3. 測試用 Excel 為模擬資料，不能推論真實 HARA、FSC、TSC 文件的品質。
-4. 成功路徑的最終回答由 LLM 生成，仍可能出現過度肯定措辭；需依 Observation 人工確認。
-5. 若 LLM 沒有產生 Tool Call，目前系統沒有強制重試或自主重新規劃機制。
-6. 尚未確認不同作業系統的 Podman 重現性；尚未固定所有套件與 Ollama 映像版本。
-7. 本專案僅做技術可行性驗證，不能代替功能安全工程師的正式評估或 ISO 26262 符合性認定。
+### 10.3 後續課程里程碑
 
-### 11.2 課程後續里程碑
+| 階段 | 計畫與驗收方向 |
+| --- | --- |
+| 作業二（本次） | 可執行 Agent、真實 Tool、完整 Trace、三組 Failure Cases、17 組 Tool unittest、Podman 本機驗收與 README；提交後重新 Clone／驗證 |
+| 作業三（功能強化與實驗） | 選擇一項有效的技術改善，提供至少 10 個測試案例，量測 Before / After 指標；本次 17 組 unittest 是工具層證據，不能直接代替完整 Agent 實驗 |
+| 期末專案 | 視資源及合法來源逐步加入 RAG／PDF／報告／驗證證據等能力；完成技術報告和更全面的可重現性驗證 |
 
-| 課程階段 | 時間 | 預定內容 |
-| --- | --- | --- |
-| 指定作業二 | 2026-11-22 | 完成可執行 Agent、真實 Tool、Decision Trace、兩個 Failure Cases 與 Podman README |
-| 指定作業三 | 2026-12-06 | 擇一強化功能，例如合法來源的 RAG 或審查能力，完成至少 10 個測試並比較改善效果 |
-| 期末作業 | 2026-12-27 | 擴充文件解析、檢索、證據引用與報告輸出，完成系統文件與重現性驗證 |
-
-未完成的功能均標示為**後續規劃**，不列入本次已驗證成果。
+**結論**：本專案以可執行、可觀察、可測試的 Agent MVP 為作業二目標。AI 是協助理解、撰寫與除錯的工具；真正的學習是能解釋原理並由自己執行、分析與驗證結果。已取得強化版本機 Podman 測試證據，但不把尚未完成的 GitHub 新版乾淨 Clone 或跨平台驗證宣稱為 PASS。
